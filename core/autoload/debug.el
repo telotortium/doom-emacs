@@ -58,10 +58,12 @@ symbol and CDR is the value to set it to when `doom-debug-mode' is activated.")
     ;; aren't defined when `doom-debug-mode' is first loaded.
     (cond (enabled
            (advice-add #'message :before #'doom--timestamped-message-a)
+           (advice-add #'message :after #'doom--timestamped-message-a-after)
            (add-variable-watcher 'doom-debug-variables #'doom--watch-debug-vars-h)
            (add-hook 'after-load-functions #'doom--watch-debug-vars-h))
           (t
            (advice-remove #'message #'doom--timestamped-message-a)
+           (advice-remove #'message #'doom--timestamped-message-a-after)
            (remove-variable-watcher 'doom-debug-variables #'doom--watch-debug-vars-h)
            (remove-hook 'after-load-functions #'doom--watch-debug-vars-h)))
     (message "Debug mode %s" (if enabled "on" "off"))))
@@ -70,27 +72,62 @@ symbol and CDR is the value to set it to when `doom-debug-mode' is activated.")
 ;;
 ;;; Time-stamped *Message* logs
 
+(defvar doom--timestamped-message-a-window-configuration nil
+  "Variable to hold window configuration in ‘doom--timestamped-message-a’.
+
+We need to save the current window configuration in
+‘doom--timestamped-message-a’ before we call ‘message’ proper, or else functions
+like ‘consult-buffer’ will have the window point moved into the “*Messages”
+buffer when we try to scroll by it in the buffer list.  However, using :around
+advice on ‘message’ has the undesired side effect of printing a bunch of empty
+messages, which spams the “*Messages” buffer with a lot of lines containing just
+timestamps.  Therefore, we need to save the window configuration in a global
+variable in a :before advice, and then restore the window configuration in an
+:after advice (‘doom--timestamped-message-a-after’).")
 (defun doom--timestamped-message-a (format-string &rest args)
   "Advice to run before `message' that prepends a timestamp to each message.
 
 Activate this advice with:
-(advice-add 'message :before 'doom--timestamped-message-a)"
+(advice-add 'message :before 'doom--timestamped-message-a)
+
+Need to also activate ‘doom--timestamped-message-a-after’."
+  (setq doom--timestamped-message-a-window-configuration nil)
   (when (and (stringp format-string)
              message-log-max
              (not (string-equal format-string "%s%s")))
     (with-current-buffer "*Messages*"
-      (let ((timestamp (format-time-string "[%F %T] " (current-time)))
+      (let ((timestamp (format-time-string "[%F %T.%3N]" (current-time)))
             (deactivate-mark nil))
         (with-silent-modifications
           (goto-char (point-max))
           (if (not (bolp))
               (newline))
-          (insert timestamp))))
+          ;; Use text property to highlight timestamp.
+          (setq begin (point))
+          (insert timestamp)
+          (setq end (point))
+          ;; Adding the space *before* setting text property is important to
+          ;; ensure the text of the message isn’t colored.
+          (insert " ")
+          (put-text-property begin end 'face 'header-line))))
     (let ((window (get-buffer-window "*Messages*")))
       (when (and window (not (equal (selected-window) window)))
-        (with-current-buffer "*Messages*"
-          (goto-char (point-max))
-          (set-window-point window (point-max)))))))
+        (progn
+          (setq doom--timestamped-message-a-window-configuration
+                (current-window-configuration))
+          (with-current-buffer "*Messages*"
+            (goto-char (point-max))
+            (set-window-point window (point-max))))))))
+(defun doom--timestamped-message-a-after (format-string &rest args)
+  "Advice to run after `message' that prepends a timestamp to each message.
+
+Activate this advice with:
+(advice-add 'message :after 'doom--timestamped-message-a-after)
+
+Also need to activate ‘doom--timestamped-message-a’."
+  (when (window-configuration-p doom--timestamped-message-a-window-configuration)
+    (set-window-configuration doom--timestamped-message-a-window-configuration))
+  (setq doom--timestamped-message-a-window-configuration nil))
 
 
 ;;
